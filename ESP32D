@@ -1,0 +1,136 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+
+// Ваши настройки Wi-Fi
+const char* ssid = "VM5092273";        // Название вашей Wi-Fi сети
+const char* password = "wn4chLxjQbtg"; // Пароль от сети
+
+// Настройки MQTT
+const char* mqttServer = "192.168.0.82"; // IP адрес вашего Raspberry Pi
+const int mqttPort = 1883;  // Порт MQTT
+const char* mqttUser = "";  // Имя пользователя MQTT (если требуется)
+const char* mqttPassword = ""; // Пароль MQTT (если требуется)
+
+// Пины
+const int relayPin = 23; // Пин для реле (GPIO 23)
+const int buttonPin = 22; // Пин для кнопки (GPIO 22)
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+bool lastRelayState = LOW; // Храним последнее состояние реле
+bool isMqttConnected = false; // Флаг для отслеживания состояния соединения с MQTT
+
+void setup() {
+  Serial.begin(115200);  // Инициализация Serial для отладки
+
+  // Настройка пинов
+  pinMode(relayPin, OUTPUT);
+  pinMode(buttonPin, INPUT_PULLUP); // Кнопка с подтягивающим резистором
+
+  // Подключаемся к Wi-Fi
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println("Connected to WiFi");
+
+  // Настройка MQTT
+  client.setServer(mqttServer, mqttPort);
+  client.setCallback(mqttCallback);  // Подключаем функцию callback
+
+  // Попытка подключения к MQTT
+  Serial.println("Attempting to connect to MQTT...");
+  reconnect();
+}
+
+void reconnect() {
+  // Пытаемся подключиться к MQTT
+  if (!client.connected()) {
+    Serial.print("Connecting to MQTT... ");
+    while (!client.connected()) {
+      // Печатаем код состояния для диагностики
+      Serial.print("Attempting MQTT connection, state: ");
+      Serial.println(client.state());
+
+      // Пробуем подключиться
+      if (client.connect("ESP32Client", mqttUser, mqttPassword)) {
+        Serial.println("Connected to MQTT");
+        client.subscribe("livingroom_relay/switch/relay/set");  // Подписываемся на команду для управления реле
+        isMqttConnected = true;
+      } else {
+        // Не удаётся подключиться, выводим код ошибки
+        Serial.print("Failed to connect to MQTT, error code: ");
+        Serial.println(client.state());  // Выводим код ошибки подключения
+        delay(5000);  // Пауза перед повторной попыткой
+      }
+    }
+  }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Эта функция будет вызываться, когда поступит сообщение на подписанный топик
+  if (strcmp(topic, "livingroom_relay/switch/relay/set") == 0) {
+    Serial.println("MQTT message received to control relay");
+
+    // Преобразуем payload в строку для обработки
+    char message[length + 1];
+    memcpy(message, payload, length);
+    message[length] = '\0'; // Добавляем конец строки
+
+    // Проверяем полученное сообщение
+    if (strcmp(message, "ON") == 0) {
+      digitalWrite(relayPin, LOW); // Включаем реле (если LOW включает, а HIGH выключает)
+      Serial.println("Relay turned ON");
+    } else if (strcmp(message, "OFF") == 0) {
+      digitalWrite(relayPin, HIGH);  // Выключаем реле (если HIGH выключает, а LOW включает)
+      Serial.println("Relay turned OFF");
+    } else {
+      Serial.println("Received invalid message, relay state unchanged.");
+    }
+  }
+}
+
+void loop() {
+  // Проверяем соединение с MQTT
+  if (isMqttConnected) {
+    if (!client.connected()) {
+      // Потеряно соединение с MQTT, пытаемся восстановить
+      Serial.println("Lost MQTT connection, reconnecting...");
+      reconnect();
+    }
+    client.loop(); // Обрабатываем входящие сообщения MQTT
+  }
+
+  // Считывание состояния кнопки
+  int buttonState = digitalRead(buttonPin);
+  if (buttonState == LOW) {  // Кнопка нажата (LOW, так как INPUT_PULLUP)
+    Serial.println("Button pressed - toggling relay");
+    digitalWrite(relayPin, !digitalRead(relayPin));  // Переключаем состояние реле
+    delay(1000);  // Дебаунсинг кнопки
+
+    // Если MQTT подключен, отправляем состояние
+    if (isMqttConnected) {
+      bool currentRelayState = digitalRead(relayPin);
+      if (currentRelayState != lastRelayState) {
+        if (currentRelayState == LOW) {
+          client.publish("livingroom_relay/switch/relay/state", "ON");
+          Serial.println("Publishing 'ON' to MQTT");
+        } else {
+          client.publish("livingroom_relay/switch/relay/state", "OFF");
+          Serial.println("Publishing 'OFF' to MQTT");
+        }
+        lastRelayState = currentRelayState; // Обновляем последнее состояние
+      }
+    }
+  }
+
+  // Если MQTT не доступен, управление происходит только локально
+  if (!isMqttConnected) {
+    Serial.println("MQTT is not connected, local mode active");
+  }
+
+  delay(200); // Задержка между проверками
+}

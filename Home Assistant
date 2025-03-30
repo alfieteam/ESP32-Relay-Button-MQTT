@@ -1,0 +1,16 @@
+mqtt:
+  switch:
+    - name: "Relay"
+      state_topic: "livingroom_relay/switch/relay/state"
+      command_topic: "livingroom_relay/switch/relay/set"
+      payload_on: "1"
+      payload_off: "0"
+      retain: true
+
+  binary_sensor:
+    - name: "Button"
+      state_topic: "livingroom_relay/binary_sensor/button/state"
+      payload_on: "ON"
+      payload_off: "OFF"
+      device_class: "motion"
+      retain: true
